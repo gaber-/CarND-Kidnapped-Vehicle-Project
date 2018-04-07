@@ -93,8 +93,11 @@ void ParticleFilter::dataAssociation(std::vector<LandmarkObs> predicted, std::ve
         double closest_dist = std::numeric_limits<double>::max();
         double closest_id;
         for (int k = 0; k <predicted.size(); k++){
-            if (closest_dist < pow(observations[i].x - predicted[k].y, 2) + pow(observations[i].y - predicted[k].y, 2))
+            double dist = pow(observations[i].x - predicted[k].y, 2) + pow(observations[i].y - predicted[k].y, 2);
+            if (closest_dist > dist){
                 closest_id = k;
+                closest_dist = dist;
+            }
         }
         observations[i].id = closest_id;
     }
@@ -115,67 +118,76 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[],
    
     double sensor_range_sq = pow(sensor_range, 2);
     for (int p = 0; p< particles.size(); p++){
-    vector<int> associations;
-    vector<double> sense_x;
-    vector<double> sense_y;
+        vector<int> associations;
+        vector<double> sense_x;
+        vector<double> sense_y;
 
-    vector<LandmarkObs> trans_observations;
-    vector<LandmarkObs> close_landmarks;
-    LandmarkObs obs;
-    for (int i=0; i<observations.size(); i++){
-   
-        LandmarkObs trans_obs;
-        obs = observations[i];
+        vector<LandmarkObs> trans_observations;
+        vector<LandmarkObs> close_landmarks;
+        LandmarkObs obs;
+        const double cost = cos(particles[p].theta);
+        const double sint = sin(particles[p].theta);
+        for (int i=0; i<observations.size(); i++){
+       
+            LandmarkObs trans_obs;
+            obs = observations[i];
 
-        // vehicle -> map coordinates
-        trans_obs.x = particles[p].x + obs.x*cos(particles[p].theta)-(obs.y*sin(particles[p].theta));
-        trans_obs.y = particles[p].y + obs.x*sin(particles[p].theta)+(obs.y*cos(particles[p].theta));
-        trans_observations.push_back(trans_obs);
-    }
-
-    for (int i = 0; i < map_landmarks.landmark_list.size(); i++){
-        LandmarkObs obj;
-        obj.x = map_landmarks.landmark_list[i].x_f;
-        obj.y = map_landmarks.landmark_list[i].y_f;
-        if (pow(particles[p].x - obj.x, 2) + pow(particles[p].y - obj.y, 2) < sensor_range_sq){
-            obj.id = i;
-            close_landmarks.push_back(obj);
-
-
+            // vehicle -> map coordinates
+            trans_obs.x = particles[p].x + obs.x*cost-obs.y*sint;
+            trans_obs.y = particles[p].y + obs.x*sint+obs.y*cost;
+            trans_observations.push_back(trans_obs);
         }
-    }
 
-    dataAssociation(close_landmarks, trans_observations);
+        for (int i = 0; i < map_landmarks.landmark_list.size(); i++){
+            LandmarkObs obj;
+            obj.x = map_landmarks.landmark_list[i].x_f;
+            obj.y = map_landmarks.landmark_list[i].y_f;
+            if (pow(particles[p].x - obj.x, 2) + pow(particles[p].y - obj.y, 2) < sensor_range_sq){
+                obj.id = map_landmarks.landmark_list[i].id_i;
+                close_landmarks.push_back(obj);
 
-    particles[p].weight = 1;
-    for (int i=0; i<trans_observations.size(); i++){
-             double x_obs = trans_observations[i].x;
-             double y_obs = trans_observations[i].y;
-             double association = trans_observations[i].id;
-    
-             double mx = close_landmarks[association].x;
-             double my = close_landmarks[association].y;
 
-             sense_x.push_back(x_obs);
-             sense_y.push_back(y_obs);
-             associations.push_back(close_landmarks[association].id + 1);
-             
+            }
+        }
 
-             double sig_x = std_landmark[0];
-             double sig_y = std_landmark[1];
-   
-             double multiplier = (1/(2*M_PI*sig_x*sig_y))*exp(-(pow(x_obs - mx, 2)/(2 * pow(sig_x,2)) + (pow(y_obs - my,2)/(2 * pow(sig_y, 2)))));
-             // multiply weight by pertinence of obseration, set minimum weight for observations with value below certain threshold
-             if (multiplier > 0){
-                 if (multiplier > pow (10, -5))
-                     particles[p].weight*=multiplier;
+        dataAssociation(close_landmarks, trans_observations);
+
+        particles[p].weight = 1;
+        for (int i=0; i<trans_observations.size(); i++){
+                 double x_obs = trans_observations[i].x;
+                 double y_obs = trans_observations[i].y;
+                 double association = trans_observations[i].id;
+        
+                 double mx = close_landmarks[association].x;
+                 double my = close_landmarks[association].y;
+
+                 sense_x.push_back(x_obs);
+                 sense_y.push_back(y_obs);
+                 associations.push_back(close_landmarks[association].id);
+                 
+
+                 // multiply weight by pertinence of obseration, set minimum weight for observations with value below certain threshold
+                 const double sig_x = std_landmark[0];
+                 const double sig_y = std_landmark[1];
+                 const double mpsig_xy = 1/(2*M_PI)*sig_x*sig_y;
+                 const double sig_xx2 = 2*sig_x*sig_x;
+                 const double sig_yy2 = 2*sig_y*sig_y;
+       
+                 double multiplier = mpsig_xy*exp(-(pow(x_obs - mx, 2)/sig_xx2 + (pow(y_obs - my,2)/sig_yy2)));
+                 // multiply weight by pertinence of obseration, set minimum weight for observations with value below certain threshold
+                 const double minw = pow (10, -5);
+                 // penalize more observations with 0 weight
+                 const double mtw = pow (10, -5);
+                 if (multiplier > 0){
+                     if (multiplier > minw)
+                         particles[p].weight*=multiplier;
+                     else
+                         particles[p].weight*=minw;}
                  else
-                     particles[p].weight*=pow(10, -5);}
-             else
-                 particles[p].weight*=pow(10, -6);
-         }
-          particles[p]=SetAssociations(particles[p], associations, sense_x, sense_y);
-          weights[p] = particles[p].weight;
+                     particles[p].weight*=mtw;
+             }
+        particles[p]=SetAssociations(particles[p], associations, sense_x, sense_y);
+        weights[p] = particles[p].weight;
    
    }
    
